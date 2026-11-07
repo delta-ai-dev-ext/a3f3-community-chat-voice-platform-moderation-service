@@ -1,0 +1,15 @@
+DROP INDEX IF EXISTS idx_outbox_unpublished;
+DROP TABLE IF EXISTS outbox_event;
+DROP INDEX IF EXISTS idx_audit_log_actor;
+DROP INDEX IF EXISTS idx_audit_log_read;
+DROP TABLE IF EXISTS audit_log_entry;
+DROP INDEX IF EXISTS uq_automod_current;
+DROP TABLE IF EXISTS automod_rule_set;
+DROP INDEX IF EXISTS idx_appeal_appellant;
+DROP INDEX IF EXISTS idx_appeal_community_status;
+DROP INDEX IF EXISTS uq_appeal_open;
+DROP TABLE IF EXISTS appeal;
+DROP INDEX IF EXISTS idx_sanction_history;
+DROP INDEX IF EXISTS idx_sanction_expiry_due;
+DROP INDEX IF EXISTS idx_sanction_active;
+DROP TABLE IF EXISTS sanction;

@@ -1,0 +1,8 @@
+server/
+*.exe
+*.test
+*.out
+*.cover
+coverage.html
+vendor/
+.env
