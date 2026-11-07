@@ -1,0 +1,911 @@
+openapi: "3.0.3"
+info:
+  title: moderation_service API
+  version: "1.0.0"
+  description: >
+    Sanctions (mute / kick / ban), sanction lifecycle, member appeals,
+    per-community automatic filter configuration, and the one-year audit log
+    for the Community Chat & Voice Platform. Every moderator action is
+    authorized in real time through community_service (API-001) and published
+    on the `moderation_events` Kafka topic.
+servers:
+  - url: /
+tags:
+  - name: sanctions
+  - name: appeals
+  - name: automod
+  - name: audit-log
+  - name: health
+paths:
+  /communities/{community_id}/sanctions:
+    post:
+      operationId: createSanction
+      summary: Mute, remove (kick), or ban a member
+      tags: [sanctions]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSanctionRequest'
+      responses:
+        "201":
+          description: Sanction created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sanction'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: Actor lacks permission, is outranked, or targets self/owner
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                insufficient_permission:
+                  value: { error: insufficient_permission, detail: "You do not hold the required permission." }
+                target_outranks_actor:
+                  value: { error: target_outranks_actor, detail: "The target outranks you in the role hierarchy." }
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+    get:
+      operationId: listSanctions
+      summary: List a community's sanctions (moderators)
+      tags: [sanctions]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SanctionStatus'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        "200":
+          description: Sanction page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SanctionPage'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /communities/{community_id}/sanctions/{sanction_id}/lift:
+    post:
+      operationId: liftSanction
+      summary: Lift an active mute or ban (unmute / unban)
+      description: Kicks cannot be lifted. Requires the permission matching the sanction type (mute_members / ban_members).
+      tags: [sanctions]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/SanctionId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LiftSanctionRequest'
+      responses:
+        "200":
+          description: Sanction lifted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sanction'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: Actor lacks the permission matching the sanction type or is outranked by the target
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: kick_not_liftable or sanction_not_active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sanctions/{sanction_id}/appeals:
+    post:
+      operationId: createAppeal
+      summary: Submit an appeal for an active mute or ban
+      tags: [appeals]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SanctionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppealRequest'
+      responses:
+        "201":
+          description: Appeal submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appeal'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          description: Sanction not found or not owned by the caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: appeal_already_open or sanction_not_active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+  /me/sanctions:
+    get:
+      operationId: listMySanctions
+      summary: Caller's active sanctions with appeal eligibility
+      tags: [sanctions]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Active sanctions of the caller (including bans in communities the caller is no longer a member of)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MySanctionPage'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+  /me/appeals:
+    get:
+      operationId: listMyAppeals
+      summary: Caller's appeals and their outcomes
+      tags: [appeals]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        "200":
+          description: Appeals submitted by the caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppealPage'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+  /communities/{community_id}/appeals:
+    get:
+      operationId: listCommunityAppeals
+      summary: Community appeal queue (review_appeals)
+      tags: [appeals]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AppealStatus'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        "200":
+          description: Appeal page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppealPage'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /communities/{community_id}/appeals/{appeal_id}/decision:
+    post:
+      operationId: decideAppeal
+      summary: Uphold or overturn an appeal (review_appeals)
+      description: An overturned decision lifts the underlying sanction with source = appeal and emits both the sanction lift event and the appeal outcome event.
+      tags: [appeals]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/AppealId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppealDecisionRequest'
+      responses:
+        "200":
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appeal'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: appeal_already_decided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /communities/{community_id}/automod:
+    get:
+      operationId: getAutomodRuleSet
+      summary: View the community's automatic filter configuration (manage_automod)
+      tags: [automod]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+      responses:
+        "200":
+          description: Current rule set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomodRuleSet'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          description: community_not_found or no rule set configured yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      operationId: putAutomodRuleSet
+      summary: Replace the community's automatic filter configuration (manage_automod)
+      description: Stores a new incremented rule_set_version and publishes a full snapshot event.
+      tags: [automod]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutomodRuleSetInput'
+      responses:
+        "200":
+          description: New rule-set version stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomodRuleSet'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /communities/{community_id}/audit-log:
+    get:
+      operationId: listAuditLog
+      summary: Read the community's audit log (view_audit_log, last 365 days)
+      tags: [audit-log]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - name: action_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AuditAction'
+        - name: actor
+          in: query
+          required: false
+          description: Filter by acting user id.
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        "200":
+          description: Audit entries newest-first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogPage'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /healthz:
+    get:
+      operationId: liveness
+      summary: Liveness probe
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+  /readyz:
+    get:
+      operationId: readiness
+      summary: Readiness probe
+      description: Verifies PostgreSQL connectivity and the Kafka producer; returns 503 once shutdown has started.
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Dependencies ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        "503":
+          description: Not ready (PostgreSQL/Kafka unavailable or shutting down)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Short-lived access token issued by identity_service, verified locally
+        with identity_service's public verification keys. Claims used: sub,
+        sid, email_verified, exp, iat, iss, aud.
+  parameters:
+    CommunityId:
+      name: community_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SanctionId:
+      name: sanction_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AppealId:
+      name: appeal_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque pagination cursor from a previous response.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Client-supplied key so a retried request returns the first accepted
+        result instead of duplicating the write.
+      schema:
+        type: string
+        maxLength: 128
+  responses:
+    BadRequest:
+      description: Malformed request (invalid JSON, invalid enum value, bad cursor)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalid_request:
+              value: { error: invalid_request, detail: "The request body is not valid." }
+            invalid_cursor:
+              value: { error: invalid_cursor, detail: "The pagination cursor is not valid." }
+    Unauthorized:
+      description: Missing, expired, or invalid access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            unauthorized:
+              value: { error: unauthorized, detail: "A valid access token is required." }
+    Forbidden:
+      description: Authenticated caller lacks the required permission or does not outrank the target
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            insufficient_permission:
+              value: { error: insufficient_permission, detail: "You do not hold the required permission." }
+            not_sanction_target:
+              value: { error: not_sanction_target, detail: "Only the sanctioned member can appeal this sanction." }
+    NotFound:
+      description: Community, sanction, or appeal not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            community_not_found:
+              value: { error: community_not_found, detail: "The community does not exist." }
+            sanction_not_found:
+              value: { error: sanction_not_found, detail: "The sanction does not exist." }
+            appeal_not_found:
+              value: { error: appeal_not_found, detail: "The appeal does not exist." }
+    UnprocessableEntity:
+      description: Semantically invalid request (duration on kick, oversized fields, invalid automod config)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            kick_no_duration:
+              value: { error: kick_no_duration, detail: "duration_seconds applies to mutes only." }
+            ban_no_duration:
+              value: { error: ban_no_duration, detail: "duration_seconds applies to mutes only." }
+            statement_too_long:
+              value: { error: statement_too_long, detail: "The appeal statement exceeds 2000 characters." }
+            invalid_automod_config:
+              value: { error: invalid_automod_config, detail: "The rule set failed validation." }
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            internal:
+              value: { error: internal, detail: "An unexpected error occurred." }
+    ServiceUnavailable:
+      description: >
+        community_service authorization check unavailable — actions fail
+        closed with `error: authorization_unavailable`. /readyz uses the same
+        status while PostgreSQL or Kafka is unreachable or on shutdown.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            authorization_unavailable:
+              value: { error: authorization_unavailable, detail: "The authorization service is temporarily unavailable." }
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Stable machine-readable error code, snake_case.
+        detail:
+          type: string
+          description: Human-readable explanation.
+    SanctionType:
+      type: string
+      enum: [mute, kick, ban]
+    SanctionStatus:
+      type: string
+      enum: [active, lifted, expired]
+      description: >
+        expired is a computed view: the mute was never lifted but its
+        expires_at has passed. A swept mute is lifted with lift_source = expiry.
+    SanctionSource:
+      type: string
+      enum: [moderator, expiry, appeal]
+    CreateSanctionRequest:
+      type: object
+      required: [target_user_id, type]
+      properties:
+        target_user_id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/SanctionType'
+        reason:
+          type: string
+          maxLength: 1000
+          description: Optional moderator reason; stored on the sanction and sent to the affected member.
+        duration_seconds:
+          type: integer
+          minimum: 1
+          maximum: 31536000
+          description: Mute duration only. Omitted/null = indefinite mute. Ignored for kick and ban.
+    Sanction:
+      type: object
+      required: [id, community_id, target_user_id, actor_user_id, type, source, reason, issued_at, expires_at, lifted_at, lift_source, lift_reason, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        community_id:
+          type: string
+          format: uuid
+        target_user_id:
+          type: string
+          format: uuid
+        actor_user_id:
+          type: [string, "null"]
+          format: uuid
+          description: Null when the lapse was automatic (source = expiry).
+        type:
+          $ref: '#/components/schemas/SanctionType'
+        source:
+          $ref: '#/components/schemas/SanctionSource'
+        reason:
+          type: [string, "null"]
+          maxLength: 1000
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        lifted_at:
+          type: [string, "null"]
+          format: date-time
+        lift_source:
+          type: [string, "null"]
+          enum: [moderator, expiry, appeal, null]
+        lift_reason:
+          type: [string, "null"]
+          maxLength: 1000
+        status:
+          $ref: '#/components/schemas/SanctionStatus'
+    SanctionPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Sanction'
+        next_cursor:
+          type: [string, "null"]
+    LiftSanctionRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 1000
+    MySanction:
+      type: object
+      required: [id, community_id, type, reason, issued_at, expires_at, appealable]
+      properties:
+        id:
+          type: string
+          format: uuid
+        community_id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/SanctionType'
+        reason:
+          type: [string, "null"]
+          maxLength: 1000
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        appealable:
+          type: boolean
+          description: True for active mute and ban sanctions the member can appeal.
+        open_appeal_id:
+          type: [string, "null"]
+          format: uuid
+          description: Present when an appeal for this sanction is already open.
+    MySanctionPage:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MySanction'
+    AppealStatus:
+      type: string
+      enum: [submitted, upheld, overturned]
+    CreateAppealRequest:
+      type: object
+      required: [statement]
+      properties:
+        statement:
+          type: string
+          minLength: 1
+          maxLength: 2000
+    Appeal:
+      type: object
+      required: [id, sanction_id, community_id, appellant_user_id, statement, status, reviewer_user_id, decision_note, created_at, decided_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sanction_id:
+          type: string
+          format: uuid
+        community_id:
+          type: string
+          format: uuid
+        appellant_user_id:
+          type: string
+          format: uuid
+        statement:
+          type: string
+          maxLength: 2000
+        status:
+          $ref: '#/components/schemas/AppealStatus'
+        reviewer_user_id:
+          type: [string, "null"]
+          format: uuid
+        decision_note:
+          type: [string, "null"]
+          maxLength: 2000
+        created_at:
+          type: string
+          format: date-time
+        decided_at:
+          type: [string, "null"]
+          format: date-time
+    AppealPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Appeal'
+        next_cursor:
+          type: [string, "null"]
+    AppealDecisionRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [upheld, overturned]
+        note:
+          type: string
+          maxLength: 2000
+    AutomodAction:
+      type: string
+      enum: [block, remove]
+    AutomodSpamRules:
+      type: object
+      required: [enabled, action, max_messages_per_window, window_seconds, max_duplicate_messages, max_mentions_per_message, max_links_per_message]
+      properties:
+        enabled:
+          type: boolean
+        action:
+          $ref: '#/components/schemas/AutomodAction'
+        max_messages_per_window:
+          type: integer
+          minimum: 1
+        window_seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+        max_duplicate_messages:
+          type: integer
+          minimum: 1
+        max_mentions_per_message:
+          type: integer
+          minimum: 1
+        max_links_per_message:
+          type: integer
+          minimum: 0
+    AutomodBannedWords:
+      type: object
+      required: [enabled, action, match_mode, words]
+      properties:
+        enabled:
+          type: boolean
+        action:
+          $ref: '#/components/schemas/AutomodAction'
+        match_mode:
+          type: string
+          enum: [whole_word, substring]
+        words:
+          type: array
+          maxItems: 1000
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 100
+    AutomodRuleSetInput:
+      type: object
+      required: [spam, banned_words, exempt_role_ids]
+      properties:
+        spam:
+          $ref: '#/components/schemas/AutomodSpamRules'
+        banned_words:
+          $ref: '#/components/schemas/AutomodBannedWords'
+        exempt_role_ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    AutomodRuleSet:
+      type: object
+      required: [community_id, rule_set_version, spam, banned_words, exempt_role_ids, updated_at]
+      properties:
+        community_id:
+          type: string
+          format: uuid
+        rule_set_version:
+          type: integer
+          minimum: 1
+        spam:
+          $ref: '#/components/schemas/AutomodSpamRules'
+        banned_words:
+          $ref: '#/components/schemas/AutomodBannedWords'
+        exempt_role_ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+        updated_at:
+          type: string
+          format: date-time
+    AuditAction:
+      type: string
+      enum: [sanction_issued, sanction_lifted, sanction_expired, appeal_decided, automod_config_changed]
+    AuditLogEntry:
+      type: object
+      required: [id, community_id, actor_user_id, target_user_id, action, reason, detail, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        community_id:
+          type: string
+          format: uuid
+        actor_user_id:
+          type: [string, "null"]
+          format: uuid
+          description: Null for automatic actions (expiry sweep).
+        target_user_id:
+          type: [string, "null"]
+          format: uuid
+        action:
+          $ref: '#/components/schemas/AuditAction'
+        reason:
+          type: [string, "null"]
+          maxLength: 1000
+        detail:
+          type: [object, "null"]
+          description: 'Action-specific ids, for example sanction_id with sanction_action "ban" and source "appeal", or rule_set_version 4.'
+        created_at:
+          type: string
+          format: date-time
+    AuditLogPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        next_cursor:
+          type: [string, "null"]
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+
+

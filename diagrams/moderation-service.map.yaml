@@ -1,0 +1,217 @@
+schema_version: 2
+diagram_id: moderation-service
+mode: service
+orientation: LR
+scope: moderation_service service view - sanctions, appeals, automod configuration,
+  audit log, PostgreSQL storage and moderation_events publication.
+sources:
+- path: docs/architecture.md
+  sha256: 0fcd5575c2c9bbed287e4cfa0d071cb509c84c41bd7ac07be5e7127f2412262c
+- path: docs/decisions/ADR-001-realtime-fail-closed-authorization.md
+  sha256: 12a9cb62ea092b0ab9543784e8f1680950b298de0d6193e3fc1f94f8eb8eb7b0
+- path: docs/decisions/ADR-002-append-only-audit-log.md
+  sha256: 80bbc33171bf04a6027706c518173d10ae73c8ae8ac5bb69a13a2bc90d255cd0
+- path: docs/decisions/ADR-003-transactional-outbox.md
+  sha256: 43e61e969aa633b5eb2534f19f41b04f4756ac109fe73ba28435eca72d3b4f58
+- path: docs/openapi_spec.yaml
+  sha256: 2e552bc3d3895112901d4878a661c78838b9ab352b1e16176284ef745842c90d
+- path: docs/user_stories.md
+  sha256: 1b886e822d116b6ed0e99bfc484abc652f6e844f38513de5756b35345f0d2f2b
+entities:
+- id: callers_mod
+  label: Moderator clients
+  kind: annotation
+  role: inbound
+  row: 302
+  evidence:
+  - path: docs/architecture.md
+    quote: Client sends `POST /communities/{community_id}/sanctions` with a bearer
+      access token (verified locally) and an optional `Idempotency-Key`.
+  - path: docs/architecture.md
+    quote: '| Kind | REST |'
+- id: callers_member
+  label: Member clients
+  kind: annotation
+  role: inbound
+  row: 372
+  evidence:
+  - path: docs/architecture.md
+    quote: Authenticated caller reads their own active sanctions (type, reason, expiry,
+      `appealable`, open appeal id) across all communities
+  - path: docs/architecture.md
+    quote: '| Kind | REST |'
+- id: svc
+  name: moderation_service
+  label: moderation_service API
+  kind: service
+  technology: kubernetes-pod
+  role: service
+  row: 260
+  evidence:
+  - path: docs/architecture.md
+    quote: '`moderation_service` owns, exclusively:'
+  - path: docs/architecture.md
+    quote: Multiple replicas run concurrently against shared PostgreSQL.
+- id: db
+  label: Moderation PostgreSQL
+  kind: database
+  technology: postgresql
+  role: outbound
+  row: 313
+  evidence:
+  - path: docs/architecture.md
+    quote: Owned and defined by this service.
+  - path: docs/architecture.md
+    quote: all state lives in PostgreSQL, Kafka, or the request itself
+- id: kafka
+  name: moderation_events
+  label: moderation_events topic
+  kind: broker
+  technology: kafka
+  role: outbound
+  row: 10
+  evidence:
+  - path: docs/architecture.md
+    quote: It produces three event types on the topic `moderation_events`, all partitioned
+      by `community_id`, wrapped in the mandatory envelope
+  - path: docs/architecture.md
+    quote: The dispatcher relays the event to Kafka topic `moderation_events`, partitioned
+      by `community_id`.
+- id: community
+  label: community_service API-001
+  kind: annotation
+  role: sync-only
+  row: 560
+  evidence:
+  - path: docs/architecture.md
+    quote: Calls `community_service` API-001 for permission + hierarchy checks before
+      every moderator action.
+  - path: docs/decisions/ADR-001-realtime-fail-closed-authorization.md
+    quote: Every moderator action (sanction issue/lift, appeal decision, automod configuration
+      read/write, audit-log read) performs a real-time API-001 call to `community_service`
+      before any state change.
+relationships:
+- id: r-mod
+  source: callers_mod
+  target: svc
+  type: request
+  interaction:
+    channel: direct
+    purpose: moderator actions
+    protocol: REST
+    exchange_id: moderator-api
+  evidence:
+  - path: docs/architecture.md
+    quote: Client sends `POST /communities/{community_id}/sanctions` with a bearer
+      access token (verified locally) and an optional `Idempotency-Key`.
+  - path: docs/architecture.md
+    quote: '| Kind | REST |'
+- id: r-member
+  source: callers_member
+  target: svc
+  type: request
+  interaction:
+    channel: direct
+    purpose: member status and appeals
+    protocol: REST
+    exchange_id: member-api
+  evidence:
+  - path: docs/architecture.md
+    quote: Authenticated caller reads their own active sanctions (type, reason, expiry,
+      `appealable`, open appeal id) across all communities
+  - path: docs/architecture.md
+    quote: '| Kind | REST |'
+- id: r-db
+  source: svc
+  target: db
+  type: ownership
+  evidence:
+  - path: docs/architecture.md
+    quote: Owned and defined by this service.
+  - path: docs/architecture.md
+    quote: all state lives in PostgreSQL, Kafka, or the request itself
+- id: r-authz
+  source: svc
+  target: community
+  type: request
+  interaction:
+    channel: direct
+    purpose: authorization checks
+    protocol: REST
+    exchange_id: api-001-authorization-check
+  evidence:
+  - path: docs/architecture.md
+    quote: The service calls `community_service` API-001
+  - path: docs/architecture.md
+    quote: '| Kind | REST |'
+- id: r-prod
+  source: svc
+  target: kafka
+  type: event
+  direction: forward
+  interaction:
+    channel: messaging
+    purpose: moderation event publication
+    protocol: Kafka
+  messaging:
+    role: producer
+    topic: moderation_events
+  evidence:
+  - path: docs/architecture.md
+    quote: The dispatcher relays the event to Kafka topic `moderation_events`, partitioned
+      by `community_id`.
+  - path: docs/architecture.md
+    quote: It produces three event types on the topic `moderation_events`, all partitioned
+      by `community_id`, wrapped in the mandatory envelope
+  - path: docs/decisions/ADR-003-transactional-outbox.md
+    quote: A background dispatcher in each replica polls unpublished rows in `created_at`
+      order, publishes them to the `moderation_events` topic (key = `community_id`),
+      and marks them published.
+view:
+  entities:
+  - callers_mod
+  - callers_member
+  - svc
+  - db
+  - kafka
+  - community
+  groups: []
+  edges:
+  - id: e-mod
+    source: callers_mod
+    target: svc
+    relationships:
+    - r-mod
+    label: REST
+    flow: forward
+  - id: e-member
+    source: callers_member
+    target: svc
+    relationships:
+    - r-member
+    label: REST
+    flow: forward
+  - id: e-db
+    source: svc
+    target: db
+    relationships:
+    - r-db
+    label: SQL
+    flow: forward
+  - id: e-authz
+    source: svc
+    target: community
+    relationships:
+    - r-authz
+    label: REST
+    flow: forward
+  - id: e-prod
+    source: svc
+    target: kafka
+    relationships:
+    - r-prod
+    label: 'Producers
+
+      moderation_service:moderation_events'
+    flow: forward
+  omitted: []

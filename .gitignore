@@ -1,0 +1,10 @@
+# Built binary only (go build ./cmd/server / Dockerfile image); the entrypoint
+# source lives in cmd/server/ and must stay tracked.
+/server
+*.exe
+*.test
+*.out
+*.cover
+coverage.html
+vendor/
+.env
